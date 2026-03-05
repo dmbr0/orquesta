@@ -32,6 +32,8 @@ defmodule Orquesta.MixProject do
 
   defp deps do
     [
+      {:jason, "~> 1.4"},
+      {:req, "~> 0.5"},
       {:telemetry, "~> 1.0"},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
