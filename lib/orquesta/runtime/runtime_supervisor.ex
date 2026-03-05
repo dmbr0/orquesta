@@ -30,8 +30,11 @@ defmodule Orquesta.Runtime.RuntimeSupervisor do
   @impl Supervisor
   def init(opts) do
     children = [
-      {AgentRuntime, opts},
-      {DrainSupervisor, opts}
+      # DrainSupervisor must start first so InternalDrain is registered in
+      # Orquesta.Registry before AgentRuntime's startup recovery fires and
+      # calls drain.reconcile/2.
+      {DrainSupervisor, opts},
+      {AgentRuntime, opts}
     ]
 
     Supervisor.init(children, strategy: :one_for_all)

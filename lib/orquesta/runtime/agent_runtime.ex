@@ -43,25 +43,25 @@ defmodule Orquesta.Runtime.AgentRuntime do
   end
 
   @doc "Sends a signal to the agent for processing. Returns immediately."
-  @spec cast_signal(pid(), Signal.t()) :: :ok
+  @spec cast_signal(pid() | :gen_statem.server_ref(), Signal.t()) :: :ok
   def cast_signal(pid, %Signal{} = signal) do
     :gen_statem.cast(pid, {:signal, signal})
   end
 
   @doc "Sends a signal and waits for the decision cycle to complete."
-  @spec call_signal(pid(), Signal.t(), timeout()) :: {:ok, struct()} | {:error, term()}
+  @spec call_signal(pid() | :gen_statem.server_ref(), Signal.t(), timeout()) :: {:ok, struct()} | {:error, term()}
   def call_signal(pid, %Signal{} = signal, timeout \\ 5000) do
     :gen_statem.call(pid, {:signal, signal}, timeout)
   end
 
   @doc "Requests cancellation of a directive or revision."
-  @spec request_cancel(pid(), CancellationToken.t()) :: :ok
+  @spec request_cancel(pid() | :gen_statem.server_ref(), CancellationToken.t()) :: :ok
   def request_cancel(pid, %CancellationToken{} = token) do
     :gen_statem.cast(pid, {:cancel, token})
   end
 
   @doc "Requests a graceful stop."
-  @spec stop(pid()) :: :ok
+  @spec stop(pid() | :gen_statem.server_ref()) :: :ok
   def stop(pid) do
     :gen_statem.cast(pid, :stop)
   end
