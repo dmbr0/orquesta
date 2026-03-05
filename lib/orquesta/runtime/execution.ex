@@ -49,33 +49,38 @@ defmodule Orquesta.Runtime.Execution do
           {0, nil}
       end
 
-    # Step 2: Query all outbox entries for this agent
-    entries = data.outbox.query_by_scope(:agent, data.agent_instance_id)
+    # Step 2: Query all outbox entries for this agent; split into non-terminal
+    # (still require action) and terminal (already done, ignore).
+    all_entries = data.outbox.query_by_scope(:agent, data.agent_instance_id)
+    pending_entries = Enum.reject(all_entries, &Orquesta.OutboxEntry.terminal?/1)
 
-    # Determine max outbox revision across all entries
-    max_outbox_revision =
-      case entries do
+    # Determine max revision among non-terminal entries only.
+    max_pending_revision =
+      case pending_entries do
         [] -> 0
-        _  -> entries |> Enum.map(& &1.agent_revision) |> Enum.max()
+        _  -> pending_entries |> Enum.map(& &1.agent_revision) |> Enum.max()
       end
 
     cond do
-      # Case 1: no recovery needed — proceed to idle
-      max_outbox_revision <= snapshot_revision ->
+      # Case 1: no non-terminal entries — clean restart, no resubmission needed.
+      # This is correct even when max_pending_revision == snapshot_revision
+      # (e.g. all entries at that revision are already terminal).
+      pending_entries == [] ->
         committed_revision = snapshot_revision
         new_data = %{data | agent: agent, committed_revision: committed_revision}
         # Notify drain of the correct revision so it can reconcile `:running` entries
         :ok = new_data.drain.reconcile(new_data.agent_instance_id, committed_revision)
         {:ok, new_data}
 
-      # Case 2: outbox is ahead of snapshot
+      # Case 2: non-terminal entries exist — determine 2a vs 2b by looking for
+      # a snapshot at max_pending_revision.
       true ->
         case data.persistence.load_snapshot_at_revision(
                data.agent_instance_id,
-               max_outbox_revision
+               max_pending_revision
              ) do
           {:ok, target_snapshot} ->
-            # Case 2a: resumable — load snapshot at max_outbox_revision
+            # Case 2a: resumable — snapshot exists at the pending revision.
             {:ok, upcasted} =
               data.persistence.upcast(
                 target_snapshot.encoded_state,
@@ -85,13 +90,13 @@ defmodule Orquesta.Runtime.Execution do
 
             decoded_agent = data.codec.decode_state(upcasted)
 
-            # Only include entries at max_outbox_revision (not older revisions)
+            # Only resubmit entries at max_pending_revision (not stale revisions).
             entry_ids =
-              entries
-              |> Enum.filter(&(&1.agent_revision == max_outbox_revision))
+              pending_entries
+              |> Enum.filter(&(&1.agent_revision == max_pending_revision))
               |> Enum.map(& &1.directive_id)
 
-            committed_revision = max_outbox_revision
+            committed_revision = max_pending_revision
 
             new_data = %{
               data
@@ -105,7 +110,8 @@ defmodule Orquesta.Runtime.Execution do
             {:resume, new_data}
 
           {:error, :not_found} ->
-            # Case 2b: divergence — no snapshot at max_outbox_revision
+            # Case 2b: divergence — no snapshot at max_pending_revision.
+            # This means outbox is ahead of every known snapshot; state is corrupt.
             {:stop, :divergence_error}
         end
     end
@@ -244,15 +250,25 @@ defmodule Orquesta.Runtime.Execution do
   @impl Orquesta.ExecutionBehaviour
   @spec do_submit_effects(RuntimeData.t()) :: {:ok, RuntimeData.t()} | {:error, term()}
   def do_submit_effects(%RuntimeData{} = data) do
-    # Section 7.4 submitting_effects — submit each outbox entry to the drain
-    drain_opts = [agent_instance_id: data.agent_instance_id]
+    # Section 7.4 submitting_effects — submit each outbox entry to the drain.
+    # Section 7.5: if cancel_requested was set after the outbox write, mark all
+    # pending entries :cancelled and skip drain.submit.
+    if data.cancel_requested do
+      Enum.each(data.outbox_entry_ids, fn entry_id ->
+        _ = data.outbox.transition(entry_id, :cancelled)
+      end)
 
-    Enum.reduce_while(data.outbox_entry_ids, {:ok, data}, fn entry_id, {:ok, acc} ->
-      case acc.drain.submit(entry_id, drain_opts) do
-        :ok              -> {:cont, {:ok, acc}}
-        {:error, reason} -> {:halt, {:error, {:drain_submit_failed, entry_id, reason}}}
-      end
-    end)
+      {:ok, data}
+    else
+      drain_opts = [agent_instance_id: data.agent_instance_id]
+
+      Enum.reduce_while(data.outbox_entry_ids, {:ok, data}, fn entry_id, {:ok, acc} ->
+        case acc.drain.submit(entry_id, drain_opts) do
+          :ok              -> {:cont, {:ok, acc}}
+          {:error, reason} -> {:halt, {:error, {:drain_submit_failed, entry_id, reason}}}
+        end
+      end)
+    end
   end
 
   @impl Orquesta.ExecutionBehaviour
@@ -335,7 +351,8 @@ defmodule Orquesta.Runtime.Execution do
       pending_plan: nil,
       pending_revision: nil,
       outbox_entry_ids: [],
-      cancel_requested: false
+      cancel_requested: false,
+      pending_caller: nil
     }
   end
 

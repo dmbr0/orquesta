@@ -5,9 +5,9 @@ defmodule Orquesta.Runtime.RuntimeSupervisor do
   Supervision tree topology:
 
       RuntimeSupervisor (one_for_all)
-       ├─ AgentRuntime       (gen_statem)
        ├─ DrainSupervisor    (supervisor)
        │   └─ InternalDrain  (GenServer)
+       ├─ AgentRuntime       (gen_statem)
        └─ CoordinatorSupervisor (DynamicSupervisor, future)
 
   `one_for_all` strategy is used because AgentRuntime and DrainSupervisor
