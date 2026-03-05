@@ -26,31 +26,43 @@ defmodule Orquesta.Runtime.InternalDrain do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, [])
+    agent_instance_id = Keyword.fetch!(opts, :agent_instance_id)
+    name = via(agent_instance_id)
+    GenServer.start_link(__MODULE__, opts, name: name)
+  end
+
+  @doc "Returns a via tuple for Registry lookup by agent_instance_id."
+  @spec via(String.t()) :: {:via, module(), term()}
+  def via(agent_instance_id) do
+    {:via, Registry, {Orquesta.Registry, {__MODULE__, agent_instance_id}}}
   end
 
   @impl Orquesta.DrainBehaviour
   @spec submit(Types.outbox_entry_id(), keyword()) :: :ok | {:error, term()}
-  def submit(outbox_entry_id, _opts) do
-    GenServer.call(__MODULE__, {:submit, outbox_entry_id})
+  def submit(outbox_entry_id, opts) do
+    agent_instance_id = Keyword.fetch!(opts, :agent_instance_id)
+    GenServer.call(via(agent_instance_id), {:submit, outbox_entry_id})
   end
 
   @impl Orquesta.DrainBehaviour
   @spec cancel(Types.outbox_entry_id(), keyword()) :: :ok | {:error, term()}
-  def cancel(outbox_entry_id, _opts) do
-    GenServer.call(__MODULE__, {:cancel, outbox_entry_id})
+  def cancel(outbox_entry_id, opts) do
+    agent_instance_id = Keyword.fetch!(opts, :agent_instance_id)
+    GenServer.call(via(agent_instance_id), {:cancel, outbox_entry_id})
   end
 
   @impl Orquesta.DrainBehaviour
   @spec status(Types.outbox_entry_id()) :: Types.outbox_status() | {:error, :not_found}
-  def status(outbox_entry_id) do
-    GenServer.call(__MODULE__, {:status, outbox_entry_id})
+  def status(outbox_entry_id, opts \\ []) do
+    agent_instance_id = Keyword.fetch!(opts, :agent_instance_id)
+    GenServer.call(via(agent_instance_id), {:status, outbox_entry_id})
   end
 
   @impl GenServer
   def init(opts) do
     state = %{
       agent_instance_id: Keyword.fetch!(opts, :agent_instance_id),
+      committed_revision: Keyword.get(opts, :committed_revision, 0),
       outbox: Keyword.fetch!(opts, :outbox),
       codec: Keyword.fetch!(opts, :codec),
       task_supervisor: nil
@@ -170,22 +182,25 @@ defmodule Orquesta.Runtime.InternalDrain do
     result
   end
 
-  @spec reconcile(%{agent_instance_id: String.t(), outbox: module(), task_supervisor: pid()}) ::
+  @spec reconcile(%{agent_instance_id: String.t(), committed_revision: non_neg_integer(), outbox: module()}) ::
           :ok
   defp reconcile(state) do
     # Section 6.2 startup reconciliation:
-    # Find all :running entries for this agent and reset to :pending
-    # Note: We don't have committed_revision here, so we reset all :running
-    # entries for this agent scope
+    # Query entries where status == :running AND scope_type == :agent
+    # AND scope_id == agent_instance_id AND agent_revision == committed_revision
     running_entries =
-      state.outbox.query_by_scope(:agent, state.agent_instance_id)
-      |> Enum.filter(fn entry -> entry.status == :running end)
+      state.outbox.query_by_status_scope_revision(
+        :running,
+        :agent,
+        state.agent_instance_id,
+        state.committed_revision
+      )
 
     Enum.each(running_entries, fn entry ->
       # Reset to :pending
       :ok = state.outbox.transition(entry.directive_id, :pending)
-      # Resubmit
-      submit(entry.directive_id, [])
+      # Resubmit via this drain instance
+      submit(entry.directive_id, agent_instance_id: state.agent_instance_id)
     end)
 
     :ok

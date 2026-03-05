@@ -84,7 +84,7 @@ defmodule Orquesta.Adapters.InMemoryPersistence do
 
         entries ->
           # Find entry with maximum revision
-          {_max_rev, snapshot} =
+          [_max_rev, snapshot] =
             Enum.max_by(entries, fn [revision, _snapshot] -> revision end)
 
           {:ok, snapshot}

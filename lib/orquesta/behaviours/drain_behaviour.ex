@@ -38,6 +38,6 @@ defmodule Orquesta.DrainBehaviour do
               :ok | {:error, reason :: term()}
 
   @doc "Returns the current execution status of a submitted directive."
-  @callback status(outbox_entry_id :: Types.outbox_entry_id()) ::
+  @callback status(outbox_entry_id :: Types.outbox_entry_id(), opts :: keyword()) ::
               Types.outbox_status() | {:error, :not_found}
 end

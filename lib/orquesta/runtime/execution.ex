@@ -32,11 +32,20 @@ defmodule Orquesta.Runtime.Execution do
     # Step 1: Load latest snapshot
     snapshot_result = data.persistence.load_latest_snapshot(data.agent_instance_id)
 
+    current_schema_version = data.module.schema_version()
+
     {snapshot_revision, agent} =
       case snapshot_result do
         {:ok, snapshot} ->
-          # Decode the state through codec after upcasting
-          decoded_agent = data.codec.decode_state(snapshot.encoded_state)
+          # Section 5.2: Upcast before decoding
+          {:ok, upcasted_state} =
+            data.persistence.upcast(
+              snapshot.encoded_state,
+              snapshot.schema_version,
+              current_schema_version
+            )
+
+          decoded_agent = data.codec.decode_state(upcasted_state)
           {snapshot.agent_revision, decoded_agent}
 
         {:error, :not_found} ->
@@ -66,9 +75,21 @@ defmodule Orquesta.Runtime.Execution do
                max_outbox_revision
              ) do
           {:ok, target_snapshot} ->
-            # Decode and resume
-            decoded_agent = data.codec.decode_state(target_snapshot.encoded_state)
-            entry_ids = Enum.map(entries, & &1.directive_id)
+            # Section 5.2: Upcast before decoding
+            {:ok, upcasted_state} =
+              data.persistence.upcast(
+                target_snapshot.encoded_state,
+                target_snapshot.schema_version,
+                current_schema_version
+              )
+
+            decoded_agent = data.codec.decode_state(upcasted_state)
+
+            # Only include entries at max_outbox_revision
+            entry_ids =
+              entries
+              |> Enum.filter(&(&1.agent_revision == max_outbox_revision))
+              |> Enum.map(& &1.directive_id)
 
             {:resume,
              %{
@@ -103,8 +124,8 @@ defmodule Orquesta.Runtime.Execution do
         end
 
       {:error, reason, new_agent, _plan} ->
-        # Agent returned error - still update agent state
-        {:error, {reason, new_agent}}
+        # Agent returned error - preserve the updated agent state
+        {:error, {:agent_error, reason, %{data | agent: new_agent}}}
     end
   end
 
@@ -237,7 +258,7 @@ defmodule Orquesta.Runtime.Execution do
   def do_submit_effects(%RuntimeData{} = data) do
     # Section 7.4 submitting_effects — submit each outbox entry to the drain
     Enum.reduce_while(data.outbox_entry_ids, {:ok, data}, fn entry_id, {:ok, acc} ->
-      case acc.drain.submit(entry_id, []) do
+      case acc.drain.submit(entry_id, agent_instance_id: acc.agent_instance_id) do
         :ok -> {:cont, {:ok, acc}}
         {:error, reason} -> {:halt, {:error, {:drain_submit_failed, entry_id, reason}}}
       end
@@ -246,6 +267,9 @@ defmodule Orquesta.Runtime.Execution do
 
   @impl Orquesta.ExecutionBehaviour
   @spec do_dispatch_post(RuntimeData.t()) :: :ok
+  # Guard against nil pending_plan (can happen after recovery resume)
+  def do_dispatch_post(%RuntimeData{pending_plan: nil}), do: :ok
+
   def do_dispatch_post(%RuntimeData{} = data) do
     # Section 7.4 dispatching_post — execute post directives
     # Post failures MUST NOT prevent transition to idle (Section 7.4)
@@ -274,7 +298,7 @@ defmodule Orquesta.Runtime.Execution do
       case data.outbox.get_entry(entry_id) do
         {:ok, entry} ->
           if not CancellationToken.stale?(token, entry.inserted_at) do
-            _ = data.drain.cancel(entry_id, [])
+            _ = data.drain.cancel(entry_id, agent_instance_id: data.agent_instance_id)
           end
 
         {:error, :not_found} ->
