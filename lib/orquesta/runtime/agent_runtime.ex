@@ -146,13 +146,15 @@ defmodule Orquesta.Runtime.AgentRuntime do
   end
 
   def deciding(:internal, :run_cmd, %RuntimeData{} = data) do
+    # do_cmd returns {:error, reason, new_data} so updated agent state is never
+    # discarded — apply_error_policy receives the post-cmd data, not the pre-cmd data.
     case data.execution.do_cmd(data) do
       {:ok, new_data} ->
         {:next_state, :dispatching_pre, new_data}
 
-      {:error, reason} ->
+      {:error, reason, new_data} ->
         Logger.warning("[Orquesta] cmd/2 failed: #{inspect(reason)}")
-        {:next_state, :idle, data.execution.apply_error_policy(data, reason)}
+        {:next_state, :idle, data.execution.apply_error_policy(new_data, reason)}
     end
   end
 

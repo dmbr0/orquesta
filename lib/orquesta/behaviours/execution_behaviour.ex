@@ -13,6 +13,13 @@ defmodule Orquesta.ExecutionBehaviour do
   2. **Testability**: tests can inject a mock or controlled implementation by
      passing `execution: MyMockExecution` in the `AgentRuntime` opts, without
      starting real persistence/outbox adapters.
+
+  ## do_cmd error return
+
+  `do_cmd/1` returns a three-element error tuple `{:error, reason, RuntimeData.t()}`
+  rather than a two-element tuple. This preserves the updated agent state that
+  `cmd/2` may have produced even on the error path. The FSM passes the updated
+  data to `apply_error_policy/2` so the agent's state is never silently discarded.
   """
 
   alias Orquesta.Runtime.RuntimeData
@@ -24,8 +31,14 @@ defmodule Orquesta.ExecutionBehaviour do
               | {:resume, RuntimeData.t()}
               | {:stop, term()}
 
-  @doc "Section 7.4 deciding — call module.cmd/2 and validate phases."
-  @callback do_cmd(RuntimeData.t()) :: {:ok, RuntimeData.t()} | {:error, term()}
+  @doc """
+  Section 7.4 deciding — call module.cmd/2 and validate phases.
+
+  Returns `{:error, reason, RuntimeData.t()}` on failure so that any agent
+  state produced by `cmd/2` is preserved and passed to `apply_error_policy/2`.
+  """
+  @callback do_cmd(RuntimeData.t()) ::
+              {:ok, RuntimeData.t()} | {:error, term(), RuntimeData.t()}
 
   @doc "Section 7.4 dispatching_pre — execute pre directives synchronously."
   @callback do_dispatch_pre(RuntimeData.t()) :: {:ok, RuntimeData.t()} | {:error, term()}
