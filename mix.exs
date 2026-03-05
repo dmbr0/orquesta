@@ -4,7 +4,6 @@ defmodule Orquesta.MixProject do
   def project do
     [
       app: :orquesta,
-      mod: {Orquesta.Application, []},
       version: "0.1.0",
       elixir: "~> 1.14",
       start_permanent: Mix.env() == :prod,
@@ -26,7 +25,8 @@ defmodule Orquesta.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :crypto]
+      extra_applications: [:logger, :crypto],
+      mod: {Orquesta.Application, []}
     ]
   end
 

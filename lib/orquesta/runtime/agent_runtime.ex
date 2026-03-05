@@ -31,7 +31,15 @@ defmodule Orquesta.Runtime.AgentRuntime do
   @doc "Starts and links an AgentRuntime under the calling process."
   @spec start_link(keyword()) :: {:ok, pid()} | {:error, term()}
   def start_link(opts) do
-    :gen_statem.start_link(__MODULE__, opts, [])
+    agent_instance_id = Keyword.fetch!(opts, :agent_instance_id)
+    name = {:via, Registry, {Orquesta.Registry, {__MODULE__, agent_instance_id}}}
+    :gen_statem.start_link(name, __MODULE__, opts, [])
+  end
+
+  @doc "Returns the via tuple used to locate this runtime in `Orquesta.Registry`."
+  @spec via(Types.agent_instance_id()) :: {:via, module(), term()}
+  def via(agent_instance_id) do
+    {:via, Registry, {Orquesta.Registry, {__MODULE__, agent_instance_id}}}
   end
 
   @doc "Sends a signal to the agent for processing. Returns immediately."
