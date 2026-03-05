@@ -120,9 +120,8 @@ defmodule Orquesta.Runtime.AgentRuntime do
         {:next_state, :idle, recovered_data}
 
       {:resume, recovered_data} ->
-        # Attach :submit_all so submitting_effects starts work immediately.
-        {:next_state, :submitting_effects, recovered_data,
-         [{:next_event, :internal, :submit_all}]}
+        :gen_statem.cast(self(), :run_submit_effects)
+        {:next_state, :submitting_effects, recovered_data}
 
       {:stop, reason} ->
         {:stop, reason, data}
@@ -229,7 +228,11 @@ defmodule Orquesta.Runtime.AgentRuntime do
   def checkpointing(:internal, :run_checkpoint, %RuntimeData{} = data) do
     case data.execution.do_checkpoint(data) do
       {:ok, new_data} ->
-        {:next_state, :submitting_effects, new_data, [{:next_event, :internal, :submit_all}]}
+        # Cast to self so the message lands in the process mailbox rather than
+        # gen_statem's internal event list. A cancel cast sent before resume()
+        # is already in the mailbox; FIFO ordering ensures cancel fires first.
+        :gen_statem.cast(self(), :run_submit_effects)
+        {:next_state, :submitting_effects, new_data}
 
       {:error, reason} ->
         Logger.error("[Orquesta] checkpoint failed: #{inspect(reason)}")
@@ -253,21 +256,27 @@ defmodule Orquesta.Runtime.AgentRuntime do
   # this state (checkpointing success or init recovery resume).
   # ---------------------------------------------------------------------------
 
-  def submitting_effects(:internal, :submit_all, %RuntimeData{} = data) do
-    case data.execution.do_submit_effects(data) do
-      {:ok, new_data} ->
-        {:next_state, :dispatching_post, new_data, [{:next_event, :internal, :run_post}]}
-
-      {:error, reason} ->
-        Logger.error("[Orquesta] effect submission failed: #{inspect(reason)}")
-        {:next_state, :idle, data}
-    end
+  # :cast :run_submit_effects — triggered by cast-to-self in checkpointing success
+  # and init recovery. Because this is a mailbox message (not an internal event),
+  # any cancel cast that arrived before it is processed first (FIFO order).
+  def submitting_effects(:cast, :run_submit_effects, %RuntimeData{} = data) do
+    run_submit_effects(data)
   end
 
-  def submitting_effects(:cast, {:cancel, token}, data) do
-    # Section 7.5: best-effort cancel via drain.
-    data.execution.do_best_effort_cancel(data, token)
-    {:keep_state, data}
+  # :internal :submit_all — kept for forward compatibility if needed.
+  def submitting_effects(:internal, :submit_all, %RuntimeData{} = data) do
+    run_submit_effects(data)
+  end
+
+  def submitting_effects(:cast, {:cancel, _token}, data) do
+    # Section 7.5 — cancel arrived before drain.submit. Because :run_submit_effects
+    # is a cast (mailbox), a cancel cast sent before it lands first (FIFO). Cancel
+    # the outbox entries directly and transition to idle without calling drain.
+    Enum.each(data.outbox_entry_ids, fn entry_id ->
+      _ = data.outbox.transition(entry_id, :cancelled)
+    end)
+
+    {:next_state, :idle, data.execution.clear_pending(data)}
   end
 
   def submitting_effects(event_type, event_content, data) do
@@ -321,6 +330,18 @@ defmodule Orquesta.Runtime.AgentRuntime do
   # ---------------------------------------------------------------------------
   # Private
   # ---------------------------------------------------------------------------
+
+  @spec run_submit_effects(RuntimeData.t()) :: :gen_statem.state_function_result()
+  defp run_submit_effects(%RuntimeData{} = data) do
+    case data.execution.do_submit_effects(data) do
+      {:ok, new_data} ->
+        {:next_state, :dispatching_post, new_data, [{:next_event, :internal, :run_post}]}
+
+      {:error, reason} ->
+        Logger.error("[Orquesta] effect submission failed: #{inspect(reason)}")
+        {:next_state, :idle, data}
+    end
+  end
 
   @spec handle_common(:gen_statem.event_type(), term(), Types.runtime_state(), RuntimeData.t()) ::
           :keep_state_and_data

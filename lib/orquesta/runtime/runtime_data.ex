@@ -57,6 +57,7 @@ defmodule Orquesta.Runtime.RuntimeData do
     outbox: nil,
     persistence: nil,
     codec: nil,
-    error_policy: :reject
+    error_policy: :reject,
+    pending_caller: nil
   ]
 end
