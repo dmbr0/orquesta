@@ -344,7 +344,15 @@ defmodule Orquesta.Runtime.AgentRuntime do
   end
 
   @spec handle_common(:gen_statem.event_type(), term(), Types.runtime_state(), RuntimeData.t()) ::
-          :keep_state_and_data
+          :keep_state_and_data | {:keep_state_and_data, [:postpone]}
+  # Signal casts that arrive while the FSM is busy (deciding, checkpointing, etc.)
+  # are postponed rather than dropped. Gen_statem replays postponed events on the
+  # next state transition — they will be processed when the FSM returns to :idle.
+  defp handle_common(:cast, {:signal, _signal}, state, _data)
+       when state not in [:idle, :stopping, :stopped] do
+    {:keep_state_and_data, [:postpone]}
+  end
+
   defp handle_common(event_type, event_content, state, _data) do
     Logger.debug(
       "[Orquesta] unhandled event in #{state}: #{inspect({event_type, event_content})}"
