@@ -119,10 +119,13 @@ defmodule Orquesta.Runtime.Execution do
       |> Enum.filter(&(&1.agent_revision == max_rev))
       |> Enum.map(& &1.directive_id)
 
-    committed_revision = max_rev
+    new_data = %{data |
+      agent: decoded_agent,
+      committed_revision: max_rev,
+      outbox_entry_ids: entry_ids
+    }
 
-    new_data = %{data | agent: decoded_agent, committed_revision: committed_revision, outbox_entry_ids: entry_ids}
-    :ok = new_data.drain.reconcile(new_data.agent_instance_id, committed_revision)
+    :ok = new_data.drain.reconcile(new_data.agent_instance_id, max_rev)
     {:resume, new_data}
   end
 
@@ -211,7 +214,11 @@ defmodule Orquesta.Runtime.Execution do
     now = DateTime.utc_now()
 
     Enum.map(data.pending_plan.effect, fn directive ->
-      updated_directive = %{directive | agent_revision: pending_revision, causation_id: data.pending_input.signal_id}
+      updated_directive = %{
+        directive
+        | agent_revision: pending_revision,
+          causation_id: data.pending_input.signal_id
+      }
 
       %Orquesta.OutboxEntry{
         directive_id: directive.directive_id,
@@ -362,7 +369,12 @@ defmodule Orquesta.Runtime.Execution do
 
   def apply_error_policy(%RuntimeData{error_policy: :requeue} = data, _reason) do
     # Section 4.1 — preserve pending_input for later reprocessing
-    %{data | pending_plan: nil, pending_revision: nil, outbox_entry_ids: [], cancel_requested: false}
+    %{data |
+      pending_plan: nil,
+      pending_revision: nil,
+      outbox_entry_ids: [],
+      cancel_requested: false
+    }
   end
 
   def apply_error_policy(%RuntimeData{error_policy: :escalate} = data, reason) do

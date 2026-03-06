@@ -60,7 +60,8 @@ defmodule Orquesta.Runtime.AgentRuntime do
   end
 
   @doc "Sends a signal and waits for the decision cycle to complete."
-  @spec call_signal(pid() | :gen_statem.server_ref(), Signal.t(), timeout()) :: {:ok, struct()} | {:error, term()}
+  @spec call_signal(pid() | :gen_statem.server_ref(), Signal.t(), timeout()) ::
+          {:ok, struct()} | {:error, term()}
   def call_signal(pid, %Signal{} = signal, timeout \\ 5000) do
     :gen_statem.call(pid, {:signal, signal}, timeout)
   end
@@ -85,7 +86,8 @@ defmodule Orquesta.Runtime.AgentRuntime do
   def callback_mode, do: [:state_functions]
 
   @impl :gen_statem
-  @spec init(keyword()) :: {:ok, Types.runtime_state(), RuntimeData.t(), [:gen_statem.action_type()]}
+  @spec init(keyword()) ::
+          {:ok, Types.runtime_state(), RuntimeData.t(), [:gen_statem.action_type()]}
   def init(opts) do
     data = %RuntimeData{
       module: Keyword.fetch!(opts, :module),

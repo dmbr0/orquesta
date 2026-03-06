@@ -184,8 +184,7 @@ defmodule MyPlatform.Agents.Planner do
     end
   end
 
-  @spec retry_planning(t(), String.t(), term()) ::
-          {:ok, t(), DirectivePlan.t()} | {:error, term(), t(), DirectivePlan.t()}
+  @spec retry_planning(t(), String.t(), term()) :: {:ok, t(), DirectivePlan.t()}
   defp retry_planning(agent, bad_response, reason) do
     directive_id = "plan-retry-" <> content_hash(bad_response)
 
