@@ -27,6 +27,8 @@ defmodule Orquesta.Providers.Anthropic.SSE do
   to obtain the final `%LLMResult{}`.
   """
 
+  @dialyzer {:no_underspecs, new: 0}
+
   alias Orquesta.Providers.Anthropic.Response
 
   @type t :: %__MODULE__{

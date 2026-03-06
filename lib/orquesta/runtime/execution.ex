@@ -28,93 +28,104 @@ defmodule Orquesta.Runtime.Execution do
           | {:resume, RuntimeData.t()}
           | {:stop, term()}
   def do_startup_recovery(%RuntimeData{} = data) do
-    # Section 5.4 — Startup Recovery
     current_schema_version = data.module.schema_version()
 
-    # Step 1: Load latest snapshot
-    {snapshot_revision, agent} =
-      case data.persistence.load_latest_snapshot(data.agent_instance_id) do
-        {:ok, snapshot} ->
-          # Section 5.2: upcast before decoding
-          {:ok, upcasted} =
-            data.persistence.upcast(
-              snapshot.encoded_state,
-              snapshot.schema_version,
-              current_schema_version
-            )
+    {snapshot_revision, agent} = load_agent_snapshot(data, current_schema_version)
+    pending_entries = fetch_pending_entries(data)
+    max_rev = max_pending_revision(pending_entries)
 
-          {snapshot.agent_revision, data.codec.decode_state(upcasted)}
-
-        {:error, :not_found} ->
-          {0, nil}
-      end
-
-    # Step 2: Query all outbox entries for this agent; split into non-terminal
-    # (still require action) and terminal (already done, ignore).
-    all_entries = data.outbox.query_by_scope(:agent, data.agent_instance_id)
-    pending_entries = Enum.reject(all_entries, &Orquesta.OutboxEntry.terminal?/1)
-
-    # Determine max revision among non-terminal entries only.
-    max_pending_revision =
-      case pending_entries do
-        [] -> 0
-        _  -> pending_entries |> Enum.map(& &1.agent_revision) |> Enum.max()
-      end
-
-    cond do
-      # Case 1: no non-terminal entries — clean restart, no resubmission needed.
-      # This is correct even when max_pending_revision == snapshot_revision
-      # (e.g. all entries at that revision are already terminal).
-      pending_entries == [] ->
-        committed_revision = snapshot_revision
-        new_data = %{data | agent: agent, committed_revision: committed_revision}
-        # Notify drain of the correct revision so it can reconcile `:running` entries
-        :ok = new_data.drain.reconcile(new_data.agent_instance_id, committed_revision)
-        {:ok, new_data}
-
-      # Case 2: non-terminal entries exist — determine 2a vs 2b by looking for
-      # a snapshot at max_pending_revision.
-      true ->
-        case data.persistence.load_snapshot_at_revision(
-               data.agent_instance_id,
-               max_pending_revision
-             ) do
-          {:ok, target_snapshot} ->
-            # Case 2a: resumable — snapshot exists at the pending revision.
-            {:ok, upcasted} =
-              data.persistence.upcast(
-                target_snapshot.encoded_state,
-                target_snapshot.schema_version,
-                current_schema_version
-              )
-
-            decoded_agent = data.codec.decode_state(upcasted)
-
-            # Only resubmit entries at max_pending_revision (not stale revisions).
-            entry_ids =
-              pending_entries
-              |> Enum.filter(&(&1.agent_revision == max_pending_revision))
-              |> Enum.map(& &1.directive_id)
-
-            committed_revision = max_pending_revision
-
-            new_data = %{
-              data
-              | agent: decoded_agent,
-                committed_revision: committed_revision,
-                outbox_entry_ids: entry_ids
-            }
-
-            # Notify drain — it reconciles `:running` entries before we resubmit
-            :ok = new_data.drain.reconcile(new_data.agent_instance_id, committed_revision)
-            {:resume, new_data}
-
-          {:error, :not_found} ->
-            # Case 2b: divergence — no snapshot at max_pending_revision.
-            # This means outbox is ahead of every known snapshot; state is corrupt.
-            {:stop, :divergence_error}
-        end
+    if pending_entries == [] do
+      recover_clean(data, snapshot_revision, agent)
+    else
+      recover_with_pending(data, current_schema_version, pending_entries, max_rev)
     end
+  end
+
+  @spec load_agent_snapshot(RuntimeData.t(), non_neg_integer()) ::
+          {non_neg_integer(), term() | nil}
+  defp load_agent_snapshot(data, current_schema_version) do
+    case data.persistence.load_latest_snapshot(data.agent_instance_id) do
+      {:ok, snapshot} ->
+        {:ok, upcasted} =
+          data.persistence.upcast(
+            snapshot.encoded_state,
+            snapshot.schema_version,
+            current_schema_version
+          )
+
+        {snapshot.agent_revision, data.codec.decode_state(upcasted)}
+
+      {:error, :not_found} ->
+        {0, nil}
+    end
+  end
+
+  @spec fetch_pending_entries(RuntimeData.t()) :: [Orquesta.OutboxEntry.t()]
+  defp fetch_pending_entries(data) do
+    data.outbox.query_by_scope(:agent, data.agent_instance_id)
+    |> Enum.reject(&Orquesta.OutboxEntry.terminal?/1)
+  end
+
+  @spec max_pending_revision([Orquesta.OutboxEntry.t()]) :: non_neg_integer()
+  defp max_pending_revision([]), do: 0
+  defp max_pending_revision(entries) do
+    entries |> Enum.map(& &1.agent_revision) |> Enum.max()
+  end
+
+  @spec recover_clean(RuntimeData.t(), non_neg_integer(), term() | nil) ::
+          {:ok, RuntimeData.t()}
+  defp recover_clean(data, snapshot_revision, agent) do
+    new_data = %{data | agent: agent, committed_revision: snapshot_revision}
+    :ok = new_data.drain.reconcile(new_data.agent_instance_id, snapshot_revision)
+    {:ok, new_data}
+  end
+
+  @spec recover_with_pending(
+          RuntimeData.t(),
+          non_neg_integer(),
+          [Orquesta.OutboxEntry.t()],
+          non_neg_integer()
+        ) :: {:resume, RuntimeData.t()} | {:stop, term()}
+  defp recover_with_pending(data, schema_ver, pending_entries, max_rev) do
+    case data.persistence.load_snapshot_at_revision(data.agent_instance_id, max_rev) do
+      {:ok, snapshot} ->
+        recover_resumable(data, schema_ver, pending_entries, max_rev, snapshot)
+
+      {:error, :not_found} ->
+        {:stop, :divergence_error}
+    end
+  end
+
+  @spec recover_resumable(
+          RuntimeData.t(),
+          non_neg_integer(),
+          [Orquesta.OutboxEntry.t()],
+          non_neg_integer(),
+          Orquesta.AgentSnapshot.t()
+        ) :: {:resume, RuntimeData.t()}
+  defp recover_resumable(data, schema_ver, pending_entries, max_rev, snapshot) do
+    {:ok, upcasted} =
+      data.persistence.upcast(
+        snapshot.encoded_state,
+        snapshot.schema_version,
+        schema_ver
+      )
+
+    decoded_agent = data.codec.decode_state(upcasted)
+
+    entry_ids =
+      pending_entries
+      |> Enum.filter(&(&1.agent_revision == max_rev))
+      |> Enum.map(& &1.directive_id)
+
+    new_data = %{data |
+      agent: decoded_agent,
+      committed_revision: max_rev,
+      outbox_entry_ids: entry_ids
+    }
+
+    :ok = new_data.drain.reconcile(new_data.agent_instance_id, max_rev)
+    {:resume, new_data}
   end
 
   @impl Orquesta.ExecutionBehaviour
@@ -164,14 +175,27 @@ defmodule Orquesta.Runtime.Execution do
   @impl Orquesta.ExecutionBehaviour
   @spec do_checkpoint(RuntimeData.t()) :: {:ok, RuntimeData.t()} | {:error, term()}
   def do_checkpoint(%RuntimeData{} = data) do
-    # Section 5.3 — five-step checkpoint protocol
-
-    # Step 1: assign new revision
     pending_revision = data.committed_revision + 1
     data = %{data | pending_revision: pending_revision}
 
-    # Step 2: validate directive IDs are present and unique
-    plan = data.pending_plan
+    case check_unique_ids(data.pending_plan) do
+      {:error, reason} ->
+        {:error, reason}
+
+      :ok ->
+        entries = build_outbox_entries(data, pending_revision)
+        entry_ids = Enum.map(entries, & &1.directive_id)
+
+        if data.cancel_requested do
+          {:error, :cancelled}
+        else
+          checkpoint_write(data, entries, entry_ids, pending_revision)
+        end
+    end
+  end
+
+  @spec check_unique_ids(DirectivePlan.t()) :: :ok | {:error, term()}
+  defp check_unique_ids(plan) do
     all_ids = DirectivePlan.all_directive_ids(plan)
     unique_ids = Enum.uniq(all_ids)
 
@@ -179,72 +203,87 @@ defmodule Orquesta.Runtime.Execution do
       duplicates = all_ids -- unique_ids
       {:error, {:duplicate_directive_ids, duplicates}}
     else
-      now = DateTime.utc_now()
+      :ok
+    end
+  end
 
-      # Build outbox entries with causal metadata assigned (step 2 continued)
-      entries =
-        Enum.map(plan.effect, fn directive ->
-          updated_directive = %{
-            directive
-            | agent_revision: pending_revision,
-              causation_id: data.pending_input.signal_id
-          }
+  @spec build_outbox_entries(RuntimeData.t(), non_neg_integer()) ::
+          [Orquesta.OutboxEntry.t()]
+  defp build_outbox_entries(data, pending_revision) do
+    now = DateTime.utc_now()
 
-          %Orquesta.OutboxEntry{
-            directive_id: directive.directive_id,
-            scope_type: :agent,
-            scope_id: data.agent_instance_id,
-            agent_revision: pending_revision,
-            encoded_directive: data.codec.encode_directive(updated_directive),
-            status: :pending,
-            inserted_at: now,
-            trace_context: %{},
-            metadata: %{}
-          }
-        end)
+    Enum.map(data.pending_plan.effect, fn directive ->
+      updated_directive = %{
+        directive
+        | agent_revision: pending_revision,
+          causation_id: data.pending_input.signal_id
+      }
 
-      entry_ids = Enum.map(entries, & &1.directive_id)
+      %Orquesta.OutboxEntry{
+        directive_id: directive.directive_id,
+        scope_type: :agent,
+        scope_id: data.agent_instance_id,
+        agent_revision: pending_revision,
+        encoded_directive: data.codec.encode_directive(updated_directive),
+        status: :pending,
+        inserted_at: now,
+        trace_context: %{},
+        metadata: %{}
+      }
+    end)
+  end
 
-      # Check cancellation BEFORE step 3 (Section 7.5)
-      if data.cancel_requested do
-        {:error, :cancelled}
-      else
-        # Step 3: atomically persist all effect directives to the outbox
-        case data.outbox.write_entries(entries) do
-          :ok ->
-            # Check cancellation AFTER step 3 (Section 7.5)
-            if data.cancel_requested do
-              Enum.each(entry_ids, fn id ->
-                _ = data.outbox.transition(id, :cancelled)
-              end)
+  @spec checkpoint_write(
+          RuntimeData.t(),
+          [Orquesta.OutboxEntry.t()],
+          [String.t()],
+          non_neg_integer()
+        ) :: {:ok, RuntimeData.t()} | {:error, term()}
+  defp checkpoint_write(data, entries, entry_ids, pending_revision) do
+    case data.outbox.write_entries(entries) do
+      :ok ->
+        checkpoint_post_write(data, entry_ids, pending_revision)
 
-              {:error, :cancelled}
-            else
-              # Step 4: persist agent snapshot at pending_revision
-              snapshot = %Orquesta.AgentSnapshot{
-                agent_instance_id: data.agent_instance_id,
-                agent_revision: pending_revision,
-                agent_module: data.module,
-                schema_version: data.module.schema_version(),
-                encoded_state: data.codec.encode_state(data.agent),
-                inserted_at: DateTime.utc_now()
-              }
+      {:error, reason} ->
+        {:error, {:outbox_write_failed, reason}}
+    end
+  end
 
-              case data.persistence.save_snapshot(snapshot) do
-                :ok ->
-                  # Step 5: commit the revision
-                  {:ok, %{data | committed_revision: pending_revision, outbox_entry_ids: entry_ids}}
+  @spec checkpoint_post_write(
+          RuntimeData.t(),
+          [String.t()],
+          non_neg_integer()
+        ) :: {:ok, RuntimeData.t()} | {:error, term()}
+  defp checkpoint_post_write(data, entry_ids, pending_revision) do
+    if data.cancel_requested do
+      Enum.each(entry_ids, fn id ->
+        _ = data.outbox.transition(id, :cancelled)
+      end)
 
-                {:error, reason} ->
-                  {:error, {:snapshot_failed, reason}}
-              end
-            end
+      {:error, :cancelled}
+    else
+      snapshot = build_snapshot(data, pending_revision)
 
-          {:error, reason} ->
-            {:error, {:outbox_write_failed, reason}}
-        end
+      case data.persistence.save_snapshot(snapshot) do
+        :ok ->
+          {:ok, %{data | committed_revision: pending_revision, outbox_entry_ids: entry_ids}}
+
+        {:error, reason} ->
+          {:error, {:snapshot_failed, reason}}
       end
     end
+  end
+
+  @spec build_snapshot(RuntimeData.t(), non_neg_integer()) :: Orquesta.AgentSnapshot.t()
+  defp build_snapshot(data, pending_revision) do
+    %Orquesta.AgentSnapshot{
+      agent_instance_id: data.agent_instance_id,
+      agent_revision: pending_revision,
+      agent_module: data.module,
+      schema_version: data.module.schema_version(),
+      encoded_state: data.codec.encode_state(data.agent),
+      inserted_at: DateTime.utc_now()
+    }
   end
 
   @impl Orquesta.ExecutionBehaviour
@@ -329,7 +368,12 @@ defmodule Orquesta.Runtime.Execution do
 
   def apply_error_policy(%RuntimeData{error_policy: :requeue} = data, _reason) do
     # Section 4.1 — preserve pending_input for later reprocessing
-    %{data | pending_plan: nil, pending_revision: nil, outbox_entry_ids: [], cancel_requested: false}
+    %{data |
+      pending_plan: nil,
+      pending_revision: nil,
+      outbox_entry_ids: [],
+      cancel_requested: false
+    }
   end
 
   def apply_error_policy(%RuntimeData{error_policy: :escalate} = data, reason) do

@@ -18,6 +18,8 @@ defmodule MyPlatform.Agents.Planner do
 
   @behaviour Orquesta.AgentBehaviour
 
+  @dialyzer {:no_underspecs, [initial_state: 0, schema_version: 0]}
+
   require Logger
 
   alias Orquesta.Directive
@@ -141,8 +143,9 @@ defmodule MyPlatform.Agents.Planner do
     {:ok, new_agent, plan}
   end
 
-  @spec handle_llm_result(t(), String.t(), LLMResult.t()) ::
-          {:ok, t(), DirectivePlan.t()} | {:error, term(), t(), DirectivePlan.t()}
+  # retry_planning/3 always returns {:ok, _, _}, so the error branch is
+  # unreachable and excluded from the spec.
+  @spec handle_llm_result(t(), String.t(), LLMResult.t()) :: {:ok, t(), DirectivePlan.t()}
   defp handle_llm_result(agent, directive_id, result) do
     # Guard: ignore stale results from a prior planning attempt.
     if directive_id != agent.pending_directive_id do
@@ -183,8 +186,7 @@ defmodule MyPlatform.Agents.Planner do
     end
   end
 
-  @spec retry_planning(t(), String.t(), term()) ::
-          {:ok, t(), DirectivePlan.t()} | {:error, term(), t(), DirectivePlan.t()}
+  @spec retry_planning(t(), String.t(), term()) :: {:ok, t(), DirectivePlan.t()}
   defp retry_planning(agent, bad_response, reason) do
     directive_id = "plan-retry-" <> content_hash(bad_response)
 

@@ -1,17 +1,15 @@
 defmodule Orquesta.Test.ControlledExecution do
+  # ExecutionBehaviour wrapper that delegates to `Orquesta.Runtime.Execution`
+  # but supports test-controlled pausing and failure injection.
+  #
+  # A test process calls `set_pause_after/1` to register a breakpoint, then
+  # sends a signal to the runtime. When the runtime reaches that step, it
+  # sends `{:paused, step}` to the test process and blocks until `resume/0`
+  # is called.
+  #
+  # Failure injection: call `set_fail_at/2` to make a specific step return
+  # `{:error, reason}` instead of delegating to the real implementation.
   @moduledoc false
-  @moduledoc """
-  ExecutionBehaviour wrapper that delegates to `Orquesta.Runtime.Execution`
-  but supports test-controlled pausing and failure injection.
-
-  A test process calls `set_pause_after/1` to register a breakpoint, then
-  sends a signal to the runtime. When the runtime reaches that step, it
-  sends `{:paused, step}` to the test process and blocks until `resume/0`
-  is called.
-
-  Failure injection: call `set_fail_at/2` to make a specific step return
-  `{:error, reason}` instead of delegating to the real implementation.
-  """
 
   @behaviour Orquesta.ExecutionBehaviour
 
@@ -144,13 +142,11 @@ defmodule Orquesta.Test.ControlledExecution do
 
   @spec controlling_test_pid() :: pid() | nil
   defp controlling_test_pid do
-    # Walk the ancestor chain to find a pid that has registered a control entry
     [self() | Process.get(:"$ancestors", [])]
     |> Enum.find(fn pid ->
-      is_pid(pid) and (
-        :ets.member(@table, {:pause_after, pid}) or
-        :ets.member(@table, {:fail_at, pid})
-      )
+      is_pid(pid) and
+        (:ets.member(@table, {:pause_after, pid}) or
+           :ets.member(@table, {:fail_at, pid}))
     end)
   end
 

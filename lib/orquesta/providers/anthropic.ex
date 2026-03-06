@@ -38,6 +38,8 @@ defmodule Orquesta.Providers.Anthropic do
 
   require Logger
 
+  @dialyzer {:no_underspecs, [config: 1, put_if_present: 3]}
+
   alias Orquesta.Providers.Anthropic.{Response, SSE}
   alias Response.LLMResult
 

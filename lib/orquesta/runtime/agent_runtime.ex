@@ -2,8 +2,7 @@ defmodule Orquesta.Runtime.AgentRuntime do
   @moduledoc """
   The agent runtime finite state machine.
 
-  Implemented as an OTP `:gen_statem` using `state_functions` callback mode
-  with `state_enter` so each state receives an enter event on transition.
+  Implemented as an OTP `:gen_statem` using `state_functions` callback mode.
 
   States (Section 7.2):
     init → idle → deciding → dispatching_pre → checkpointing →
@@ -61,7 +60,8 @@ defmodule Orquesta.Runtime.AgentRuntime do
   end
 
   @doc "Sends a signal and waits for the decision cycle to complete."
-  @spec call_signal(pid() | :gen_statem.server_ref(), Signal.t(), timeout()) :: {:ok, struct()} | {:error, term()}
+  @spec call_signal(pid() | :gen_statem.server_ref(), Signal.t(), timeout()) ::
+          {:ok, struct()} | {:error, term()}
   def call_signal(pid, %Signal{} = signal, timeout \\ 5000) do
     :gen_statem.call(pid, {:signal, signal}, timeout)
   end
@@ -86,7 +86,8 @@ defmodule Orquesta.Runtime.AgentRuntime do
   def callback_mode, do: [:state_functions]
 
   @impl :gen_statem
-  @spec init(keyword()) :: {:ok, Types.runtime_state(), RuntimeData.t(), [:gen_statem.action_type()]}
+  @spec init(keyword()) ::
+          {:ok, Types.runtime_state(), RuntimeData.t(), [:gen_statem.action()]}
   def init(opts) do
     data = %RuntimeData{
       module: Keyword.fetch!(opts, :module),
