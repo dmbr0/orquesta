@@ -18,14 +18,15 @@ defmodule Orquesta.MixProject do
       ],
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
-        flags: [:error_handling, :underspecs]
+        flags: [:error_handling, :underspecs, :unknown]
       ]
     ]
   end
 
   def application do
     [
-      extra_applications: [:logger, :crypto]
+      extra_applications: [:logger, :crypto],
+      mod: {Orquesta.Application, []}
     ]
   end
 

@@ -2,11 +2,11 @@ defmodule Orquesta.Runtime.DrainSupervisor do
   @moduledoc """
   Supervises the drain implementation for a single agent runtime instance.
 
-  On startup, the internal drain performs reconciliation:
-  queries outbox entries where `status == :running AND scope_id == agent_instance_id
-  AND agent_revision == committed_revision`, resets them to `:pending`,
-  and resubmits them. This ensures directives interrupted by a drain crash
-  are retried safely.
+  The internal drain does NOT reconcile on its own startup. Reconciliation
+  is triggered by `AgentRuntime` via `DrainBehaviour.reconcile/2` after
+  startup recovery completes and the correct `committed_revision` is known.
+  This two-phase approach prevents the drain from querying the outbox at
+  revision 0 when the agent may actually be recovering to a later revision.
 
   External drains (Oban, etc.) do not run under this supervisor; they are
   managed by their own infrastructure. The drain module is swappable via

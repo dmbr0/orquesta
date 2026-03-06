@@ -35,7 +35,11 @@ defmodule Orquesta.Runtime.RuntimeData do
           persistence: module() | nil,
           codec: module() | nil,
           # Policy
-          error_policy: Types.error_policy()
+          error_policy: Types.error_policy(),
+          # Transient — non-nil when a synchronous call_signal/3 is in flight.
+          # The FSM replies to this caller at the end of dispatching_post with
+          # {:ok, data.agent} so the caller receives the updated agent state.
+          pending_caller: :gen_statem.from() | nil
         }
 
   defstruct [
@@ -53,6 +57,7 @@ defmodule Orquesta.Runtime.RuntimeData do
     outbox: nil,
     persistence: nil,
     codec: nil,
-    error_policy: :reject
+    error_policy: :reject,
+    pending_caller: nil
   ]
 end

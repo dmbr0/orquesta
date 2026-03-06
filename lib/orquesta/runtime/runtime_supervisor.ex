@@ -5,9 +5,9 @@ defmodule Orquesta.Runtime.RuntimeSupervisor do
   Supervision tree topology:
 
       RuntimeSupervisor (one_for_all)
-       ├─ AgentRuntime       (gen_statem)
        ├─ DrainSupervisor    (supervisor)
        │   └─ InternalDrain  (GenServer)
+       ├─ AgentRuntime       (gen_statem)
        └─ CoordinatorSupervisor (DynamicSupervisor, future)
 
   `one_for_all` strategy is used because AgentRuntime and DrainSupervisor
@@ -30,8 +30,11 @@ defmodule Orquesta.Runtime.RuntimeSupervisor do
   @impl Supervisor
   def init(opts) do
     children = [
-      {AgentRuntime, opts},
-      {DrainSupervisor, opts}
+      # DrainSupervisor must start first so InternalDrain is registered in
+      # Orquesta.Registry before AgentRuntime's startup recovery fires and
+      # calls drain.reconcile/2.
+      {DrainSupervisor, opts},
+      {AgentRuntime, opts}
     ]
 
     Supervisor.init(children, strategy: :one_for_all)
