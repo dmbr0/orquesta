@@ -182,11 +182,13 @@ defmodule Orquesta.Agents.Worker do
     {:ok, new_agent, plan}
   end
 
-  @spec handle_llm_result(t(), String.t(), LLMResult.t()) ::
-          {:ok, t(), DirectivePlan.t()} | {:error, term(), t(), DirectivePlan.t()}
+  # finish/2 always returns {:ok, _, _} so the error branch is excluded from
+  # the spec.
+  @spec handle_llm_result(t(), String.t(), LLMResult.t()) :: {:ok, t(), DirectivePlan.t()}
   defp handle_llm_result(agent, directive_id, result) do
     # Guard: ignore stale results.
     if directive_id != agent.pending_directive_id do
+      Logger.warning("[Worker] ignoring stale llm_result for directive #{directive_id}")
       {:ok, agent, DirectivePlan.empty()}
     else
       updated_messages = Anthropic.append_assistant(agent.messages, result)
@@ -211,6 +213,7 @@ defmodule Orquesta.Agents.Worker do
           {:ok, t(), DirectivePlan.t()}
   defp handle_tool_result(agent, directive_id, result) do
     if directive_id != agent.pending_directive_id do
+      Logger.warning("[Worker] ignoring stale tool_result for directive #{directive_id}")
       {:ok, agent, DirectivePlan.empty()}
     else
       tool_call_id = agent.pending_tool_call_id
@@ -271,67 +274,79 @@ defmodule Orquesta.Agents.Worker do
   @spec dispatch_tool(t(), Orquesta.Providers.Anthropic.Response.ToolUseBlock.t()) ::
           {:ok, t(), DirectivePlan.t()}
   defp dispatch_tool(agent, tool_call) do
-    tool_name = tool_call.name
-    tool_directive_id = make_directive_id("tool", agent.turn_count, tool_name)
+    tool_directive_id = make_directive_id("tool", agent.turn_count, tool_call.name)
 
-    case Map.get(agent.tool_registry, tool_name) do
-      nil ->
-        # Unknown tool — return error as tool result so LLM can recover.
-        Logger.warning("[Worker] unknown tool: #{tool_name}")
-
-        error_messages =
-          Anthropic.append_tool_result(
-            agent.messages,
-            tool_call.id,
-            "Error: unknown tool #{tool_name}"
-          )
-
-        correlation_id = make_correlation_id(agent)
-        llm_directive_id = make_directive_id("llm", agent.turn_count + 1, agent.task)
-
-        directive =
-          build_call_llm(
-            llm_directive_id,
-            error_messages,
-            agent.system_prompt,
-            agent.tools,
-            correlation_id
-          )
-
-        new_agent = %{
-          agent
-          | status: :waiting_for_llm,
-            messages: error_messages,
-            pending_directive_id: llm_directive_id,
-            turn_count: agent.turn_count + 1
-        }
-
-        {:ok, new_agent, %DirectivePlan{effect: [directive]}}
-
+    case Map.get(agent.tool_registry, tool_call.name) do
+      nil -> dispatch_unknown_tool(agent, tool_call)
       {tool_module, base_args} ->
-        args =
-          base_args
-          |> Map.merge(tool_call.input)
-          |> maybe_put_working_dir(agent.working_dir)
-
-        correlation_id = make_correlation_id(agent)
-
-        directive = %Directive{
-          directive_id: tool_directive_id,
-          module: tool_module,
-          args: args,
-          correlation_id: correlation_id
-        }
-
-        new_agent = %{
-          agent
-          | status: :waiting_for_tool,
-            pending_directive_id: tool_directive_id,
-            pending_tool_call_id: tool_call.id
-        }
-
-        {:ok, new_agent, %DirectivePlan{effect: [directive]}}
+        dispatch_known_tool(agent, tool_call, tool_module, base_args, tool_directive_id)
     end
+  end
+
+  @spec dispatch_unknown_tool(t(), Orquesta.Providers.Anthropic.Response.ToolUseBlock.t()) ::
+          {:ok, t(), DirectivePlan.t()}
+  defp dispatch_unknown_tool(agent, tool_call) do
+    # Unknown tool — return error as tool result so LLM can recover.
+    Logger.warning("[Worker] unknown tool: #{tool_call.name}")
+
+    error_messages =
+      Anthropic.append_tool_result(
+        agent.messages,
+        tool_call.id,
+        "Error: unknown tool #{tool_call.name}"
+      )
+
+    correlation_id = make_correlation_id(agent)
+    llm_directive_id = make_directive_id("llm", agent.turn_count + 1, agent.task)
+
+    directive =
+      build_call_llm(
+        llm_directive_id,
+        error_messages,
+        agent.system_prompt,
+        agent.tools,
+        correlation_id
+      )
+
+    new_agent = %{
+      agent
+      | status: :waiting_for_llm,
+        messages: error_messages,
+        pending_directive_id: llm_directive_id,
+        turn_count: agent.turn_count + 1
+    }
+
+    {:ok, new_agent, %DirectivePlan{effect: [directive]}}
+  end
+
+  @spec dispatch_known_tool(
+          t(),
+          Orquesta.Providers.Anthropic.Response.ToolUseBlock.t(),
+          module(),
+          map(),
+          String.t()
+        ) :: {:ok, t(), DirectivePlan.t()}
+  defp dispatch_known_tool(agent, tool_call, tool_module, base_args, tool_directive_id) do
+    args =
+      base_args
+      |> Map.merge(tool_call.input)
+      |> maybe_put_working_dir(agent.working_dir)
+
+    directive = %Directive{
+      directive_id: tool_directive_id,
+      module: tool_module,
+      args: args,
+      correlation_id: make_correlation_id(agent)
+    }
+
+    new_agent = %{
+      agent
+      | status: :waiting_for_tool,
+        pending_directive_id: tool_directive_id,
+        pending_tool_call_id: tool_call.id
+    }
+
+    {:ok, new_agent, %DirectivePlan{effect: [directive]}}
   end
 
   # ---------------------------------------------------------------------------
@@ -343,17 +358,12 @@ defmodule Orquesta.Agents.Worker do
     new_agent = %{agent | status: if(match?({:ok, _}, result), do: :done, else: :failed)}
 
     # If reply_to is set, signal result upstream.
-    plan =
-      case agent.reply_to do
-        nil ->
-          DirectivePlan.empty()
+    case agent.reply_to do
+      nil -> :ok
+      reply_target -> signal_upstream(reply_target, agent, result)
+    end
 
-        reply_target ->
-          signal_upstream(reply_target, agent, result)
-          DirectivePlan.empty()
-      end
-
-    {:ok, new_agent, plan}
+    {:ok, new_agent, DirectivePlan.empty()}
   end
 
   @spec signal_upstream(String.t(), t(), {:ok, String.t()} | {:error, term()}) :: :ok

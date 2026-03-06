@@ -83,27 +83,34 @@ defmodule Orquesta.Directives.Tool.ListFiles do
     unless File.dir?(base_dir) do
       {:error, {:working_dir_not_found, working_dir}}
     else
-      target_dir =
-        case path do
-          nil -> base_dir
-          p ->
-            case ToolHelper.safe_path(working_dir, p) do
-              {:ok, abs} -> abs
-              {:error, :path_escape} -> {:error, {:path_escape, p}}
-            end
-        end
-
-      case target_dir do
+      case resolve_target(working_dir, base_dir, path) do
         {:error, reason} -> {:error, reason}
-        _ ->
-          listing = do_list(target_dir, base_dir, 0, max_depth, include_hidden)
-          {:ok, listing}
+        target_dir -> {:ok, do_list(target_dir, 0, max_depth, include_hidden)}
       end
     end
   end
 
-  @spec do_list(String.t(), String.t(), non_neg_integer(), pos_integer(), boolean()) :: String.t()
-  defp do_list(dir, base_dir, current_depth, max_depth, include_hidden) do
+  @spec resolve_target(String.t(), String.t(), String.t() | nil) ::
+          String.t() | {:error, term()}
+  defp resolve_target(_working_dir, base_dir, nil), do: base_dir
+
+  defp resolve_target(working_dir, _base_dir, path) do
+    case ToolHelper.safe_path(working_dir, path) do
+      {:ok, abs} -> abs
+      {:error, :path_escape} -> {:error, {:path_escape, path}}
+    end
+  end
+
+  @spec do_list(String.t(), non_neg_integer(), pos_integer(), boolean()) :: String.t()
+  defp do_list(dir, current_depth, max_depth, include_hidden) do
+    {dirs, files} = list_dir_entries(dir, include_hidden)
+    root = if current_depth == 0, do: ["."], else: [Path.basename(dir)]
+    nested = collect_nested(dirs, dir, current_depth, max_depth, include_hidden)
+    format_listing(root ++ nested ++ files, current_depth)
+  end
+
+  @spec list_dir_entries(String.t(), boolean()) :: {[String.t()], [String.t()]}
+  defp list_dir_entries(dir, include_hidden) do
     entries =
       case File.ls(dir) do
         {:ok, files} -> files
@@ -113,41 +120,44 @@ defmodule Orquesta.Directives.Tool.ListFiles do
       |> Enum.reject(&skip_dir?/1)
       |> Enum.sort()
 
-    {dirs, files} = Enum.split_with(entries, &File.dir?(Path.join(dir, &1)))
+    Enum.split_with(entries, &File.dir?(Path.join(dir, &1)))
+  end
 
-    parts =
-      if current_depth == 0 do
-        ["."]
-      else
-        [Path.basename(dir)]
-      end
+  @spec collect_nested(
+          [String.t()],
+          String.t(),
+          non_neg_integer(),
+          pos_integer(),
+          boolean()
+        ) :: [String.t()]
+  defp collect_nested(dirs, dir, current_depth, max_depth, include_hidden) do
+    if current_depth < max_depth do
+      Enum.flat_map(dirs, fn d ->
+        nested = Path.join(dir, d)
 
-    parts =
-      if current_depth < max_depth do
-        Enum.reduce(dirs, parts, fn d, acc ->
-          nested = Path.join(dir, d)
-
-          if File.dir?(nested) do
-            acc ++ [d, do_list(nested, base_dir, current_depth + 1, max_depth, include_hidden)]
-          else
-            acc
-          end
-        end)
-      else
-        parts ++ Enum.map(dirs, &"#{&1}/")
-      end
-
-    parts = parts ++ files
-
-    if current_depth == 0 do
-      Enum.join(parts, "\n")
-    else
-      prefix = String.duplicate("│   ", current_depth)
-      Enum.map_join(parts, "\n#{prefix}├── ", fn
-        s when is_binary(s) -> s
-        list -> Enum.join(list, "\n#{prefix}│   ├── ")
+        if File.dir?(nested) do
+          [d, do_list(nested, current_depth + 1, max_depth, include_hidden)]
+        else
+          []
+        end
       end)
+    else
+      Enum.map(dirs, &"#{&1}/")
     end
+  end
+
+  @spec format_listing([String.t()], non_neg_integer()) :: String.t()
+  defp format_listing(parts, 0) do
+    Enum.join(parts, "\n")
+  end
+
+  defp format_listing(parts, depth) do
+    prefix = String.duplicate("│   ", depth)
+
+    Enum.map_join(parts, "\n#{prefix}├── ", fn
+      s when is_binary(s) -> s
+      list -> Enum.join(list, "\n#{prefix}│   ├── ")
+    end)
   end
 
   @spec skip_dir?(String.t()) :: boolean()

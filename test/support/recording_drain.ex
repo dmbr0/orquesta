@@ -1,16 +1,14 @@
 defmodule Orquesta.Test.RecordingDrain do
+  # Test drain that records submit/cancel calls in ETS.
+  #
+  # Useful for asserting that the runtime submitted the correct outbox entries
+  # without needing real directive modules. Calls are stored as:
+  #
+  #     {:submitted, outbox_entry_id}
+  #     {:cancelled, outbox_entry_id}
+  #
+  # Retrieve with `RecordingDrain.calls/0`.
   @moduledoc false
-  @moduledoc """
-  Test drain that records submit/cancel calls in ETS.
-
-  Useful for asserting that the runtime submitted the correct outbox entries
-  without needing real directive modules. Calls are stored as:
-
-      {:submitted, outbox_entry_id}
-      {:cancelled, outbox_entry_id}
-
-  Retrieve with `RecordingDrain.calls/0`.
-  """
 
   @behaviour Orquesta.DrainBehaviour
 

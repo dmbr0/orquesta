@@ -141,8 +141,9 @@ defmodule MyPlatform.Agents.Planner do
     {:ok, new_agent, plan}
   end
 
-  @spec handle_llm_result(t(), String.t(), LLMResult.t()) ::
-          {:ok, t(), DirectivePlan.t()} | {:error, term(), t(), DirectivePlan.t()}
+  # retry_planning/3 always returns {:ok, _, _}, so the error branch is
+  # unreachable and excluded from the spec.
+  @spec handle_llm_result(t(), String.t(), LLMResult.t()) :: {:ok, t(), DirectivePlan.t()}
   defp handle_llm_result(agent, directive_id, result) do
     # Guard: ignore stale results from a prior planning attempt.
     if directive_id != agent.pending_directive_id do

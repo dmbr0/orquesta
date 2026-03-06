@@ -2,8 +2,7 @@ defmodule Orquesta.Runtime.AgentRuntime do
   @moduledoc """
   The agent runtime finite state machine.
 
-  Implemented as an OTP `:gen_statem` using `state_functions` callback mode
-  with `state_enter` so each state receives an enter event on transition.
+  Implemented as an OTP `:gen_statem` using `state_functions` callback mode.
 
   States (Section 7.2):
     init → idle → deciding → dispatching_pre → checkpointing →
