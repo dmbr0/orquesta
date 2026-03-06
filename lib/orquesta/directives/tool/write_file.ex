@@ -21,6 +21,8 @@ defmodule Orquesta.Directives.Tool.WriteFile do
 
   @behaviour Orquesta.DirectiveBehaviour
 
+  @dialyzer {:no_underspecs, ensure_parent_dir: 1}
+
   alias Orquesta.Directives.Tool.ToolHelper
 
   @type args :: %{

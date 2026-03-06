@@ -82,6 +82,8 @@ map containing:
 
   @behaviour Orquesta.DirectiveBehaviour
 
+  @dialyzer {:no_underspecs, put_opt: 3}
+
   require Logger
 
   alias Orquesta.Providers.Anthropic

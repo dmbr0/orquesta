@@ -18,6 +18,8 @@ defmodule MyPlatform.Agents.Planner do
 
   @behaviour Orquesta.AgentBehaviour
 
+  @dialyzer {:no_underspecs, [initial_state: 0, schema_version: 0]}
+
   require Logger
 
   alias Orquesta.Directive

@@ -85,7 +85,7 @@ defmodule Orquesta.Directives.SpawnWorkerAgent do
   # Private
   # ---------------------------------------------------------------------------
 
-  @spec validate_args(map()) :: :ok | {:error, term()}
+  @spec validate_args(map()) :: :ok | {:error, {:invalid_args, map()}}
   defp validate_args(%{task: task, reply_to: reply_to, drain: _, outbox: _, persistence: _, codec: _})
        when is_binary(task) and is_binary(reply_to),
        do: :ok

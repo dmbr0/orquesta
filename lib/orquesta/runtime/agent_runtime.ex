@@ -87,7 +87,7 @@ defmodule Orquesta.Runtime.AgentRuntime do
 
   @impl :gen_statem
   @spec init(keyword()) ::
-          {:ok, Types.runtime_state(), RuntimeData.t(), [:gen_statem.action_type()]}
+          {:ok, Types.runtime_state(), RuntimeData.t(), [:gen_statem.action()]}
   def init(opts) do
     data = %RuntimeData{
       module: Keyword.fetch!(opts, :module),
