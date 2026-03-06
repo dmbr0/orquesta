@@ -159,7 +159,6 @@ defmodule Orquesta.Agents.Worker do
     reply_to = Map.get(opts, :reply_to)
     max_turns = Map.get(opts, :max_turns, 30)
     tool_registry = Map.get(opts, :tool_registry, %{})
-
     messages = [%{role: :user, content: task}]
     directive_id = make_directive_id("llm", 0, task)
 

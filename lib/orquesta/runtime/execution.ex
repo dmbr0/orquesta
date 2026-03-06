@@ -75,9 +75,8 @@ defmodule Orquesta.Runtime.Execution do
   @spec recover_clean(RuntimeData.t(), non_neg_integer(), term() | nil) ::
           {:ok, RuntimeData.t()}
   defp recover_clean(data, snapshot_revision, agent) do
-    committed_revision = snapshot_revision
-    new_data = %{data | agent: agent, committed_revision: committed_revision}
-    :ok = new_data.drain.reconcile(new_data.agent_instance_id, committed_revision)
+    new_data = %{data | agent: agent, committed_revision: snapshot_revision}
+    :ok = new_data.drain.reconcile(new_data.agent_instance_id, snapshot_revision)
     {:ok, new_data}
   end
 
